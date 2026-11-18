@@ -1,0 +1,22 @@
+name: New locale
+description: Propose (or volunteer for) a new language
+labels: [locale, good first issue]
+body:
+  - type: input
+    id: language
+    attributes:
+      label: Language and code
+      placeholder: 'Hindi (hi)'
+    validations:
+      required: true
+  - type: textarea
+    id: samples
+    attributes:
+      label: Sample translations
+      description: How a native speaker would say "Every 15 minutes, between 09:00 and 17:59, Monday through Friday" and "At 00:00, on the last day of the month".
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to write this locale (see CONTRIBUTING.md, "How to add a locale")

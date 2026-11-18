@@ -1,0 +1,40 @@
+name: Bug report
+description: A wrong description, run time, warning or error
+labels: [bug]
+body:
+  - type: input
+    id: expression
+    attributes:
+      label: Cron expression
+      placeholder: '*/15 9-17 * * 1-5'
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: The command or code you ran (with --tz, --locale and --from), and the output you got.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: For run times, what your cron daemon or scheduler actually does is very helpful.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: cron-explain version
+      placeholder: '0.1.0'
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version and OS
+      placeholder: 'Node 22.12, Ubuntu 24.04'
+    validations:
+      required: true

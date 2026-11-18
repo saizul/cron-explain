@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [20, 22]
+        include:
+          - os: windows-latest
+            node: 22
+          - os: macos-latest
+            node: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Run the examples against the build
+        run: |
+          node examples/basic.mjs
+          node examples/commonjs.cjs
+          node examples/custom-locale.mjs
+      - name: Smoke-test the CLI
+        shell: bash
+        run: |
+          node dist/esm/cli.js --version
+          node dist/esm/cli.js "*/15 9-17 * * 1-5" --next 5 --tz Asia/Dhaka --locale bn
+          node dist/esm/cli.js "30 2 * * *" --tz America/New_York --from 2026-03-07 --next 3
+          node dist/esm/cli.js @weekly --json --tz UTC
+          if node dist/esm/cli.js "61 * * * *"; then echo "expected a failure" && exit 1; fi
+      - name: Check the packed package
+        run: npm pack --dry-run
