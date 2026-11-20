@@ -57,5 +57,8 @@ jobs:
           node dist/esm/cli.js "30 2 * * *" --tz America/New_York --from 2026-03-07 --next 3
           node dist/esm/cli.js @weekly --json --tz UTC
           if node dist/esm/cli.js "61 * * * *"; then echo "expected a failure" && exit 1; fi
+          node dist/esm/cli.js --file examples/crontab --tz UTC
+          printf '61 * * * * /bin/true\n' > bad.crontab
+          if node dist/esm/cli.js --file bad.crontab; then echo "expected a failure" && exit 1; fi
       - name: Check the packed package
         run: npm pack --dry-run
