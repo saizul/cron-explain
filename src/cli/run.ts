@@ -1,3 +1,4 @@
+import { parseCrontab } from '../crontab.js';
 import { CronError } from '../errors.js';
 import { explain } from '../explain/index.js';
 import { validate } from '../lint.js';
@@ -13,9 +14,12 @@ export interface CliIO {
   stderr(text: string): void;
   /** Current time in milliseconds; injectable for tests. */
   now?: () => number;
+  /** Reads a file for --file ("-" is standard input); injectable for tests. */
+  readFile?: (path: string) => string;
 }
 
 const HELP = `Usage: cron-explain <expression> [options]
+       cron-explain --file <crontab> [options]
 
 Explain a cron expression in plain language, check it for common mistakes
 and list its next run times.
@@ -27,6 +31,9 @@ Options:
   -l, --locale <code>  language of the description: ${'{LOCALES}'} (default en)
   -f, --from <date>    count runs from this ISO date instead of now
       --seconds <mode> optional (default), required or forbidden
+      --file <path>    explain every job in a crontab file ("-" for stdin);
+                       shows 1 next run per job unless --next is given
+      --system         the file has a user column (/etc/crontab, /etc/cron.d)
       --json           print JSON instead of text
       --strict         exit with code 1 when there are warnings
   -h, --help           show this help
@@ -36,8 +43,10 @@ Examples:
   cron-explain "*/15 9-17 * * 1-5" --next 5 --tz Asia/Dhaka --locale bn
   cron-explain "0 2 * * *" --tz America/New_York --from 2026-03-07
   cron-explain @weekly --json
+  crontab -l | cron-explain --file - --tz Asia/Dhaka
 
-Exit codes: 0 valid, 1 invalid expression (or warnings with --strict), 2 usage error.
+Exit codes: 0 valid, 1 invalid expression or crontab line (or warnings with --strict),
+2 usage error.
 `;
 
 interface Args {
@@ -50,6 +59,9 @@ interface Args {
   seconds?: 'optional' | 'required' | 'forbidden';
   json: boolean;
   strict: boolean;
+  file?: string;
+  system: boolean;
+  nextGiven: boolean;
 }
 
 class UsageError extends Error {}
@@ -71,6 +83,7 @@ const VALUE_OPTIONS: Record<string, string> = {
   '-f': 'from',
   '--from': 'from',
   '--seconds': 'seconds',
+  '--file': 'file',
 };
 
 function count(name: string, value: string): number {
@@ -82,7 +95,16 @@ function count(name: string, value: string): number {
 
 function parseArgs(argv: string[]): Args | 'help' | 'version' {
   const positional: string[] = [];
-  const args: Args = { expression: '', next: 5, prev: 0, locale: 'en', json: false, strict: false };
+  const args: Args = {
+    expression: '',
+    next: 5,
+    prev: 0,
+    locale: 'en',
+    json: false,
+    strict: false,
+    system: false,
+    nextGiven: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '-h' || arg === '--help') return 'help';
@@ -95,6 +117,10 @@ function parseArgs(argv: string[]): Args | 'help' | 'version' {
       args.strict = true;
       continue;
     }
+    if (arg === '--system') {
+      args.system = true;
+      continue;
+    }
     if (arg === '--') {
       positional.push(...argv.slice(i + 1));
       break;
@@ -105,7 +131,10 @@ function parseArgs(argv: string[]): Args | 'help' | 'version' {
     if (key) {
       const value = flag !== arg ? arg.slice(eq + 1) : argv[++i];
       if (value === undefined) throw new UsageError(`${flag} needs a value`);
-      if (key === 'next') args.next = count('next', value);
+      if (key === 'next') {
+        args.next = count('next', value);
+        args.nextGiven = true;
+      } else if (key === 'file') args.file = value;
       else if (key === 'prev') args.prev = count('prev', value);
       else if (key === 'tz') args.tz = value;
       else if (key === 'locale') args.locale = value;
@@ -121,6 +150,12 @@ function parseArgs(argv: string[]): Args | 'help' | 'version' {
   }
   // Allow `cron-explain 0 9 '*' '*' 1-5` as well as one quoted argument.
   args.expression = positional.join(' ');
+  if (args.file !== undefined) {
+    if (args.expression.trim() !== '') throw new UsageError('give either an expression or --file, not both');
+    if (!args.nextGiven) args.next = 1;
+    return args;
+  }
+  if (args.system) throw new UsageError('--system only applies to --file');
   if (args.expression.trim() === '') throw new UsageError('missing cron expression');
   return args;
 }
@@ -166,6 +201,7 @@ export function run(argv: string[], io: CliIO): number {
   }
 
   const parseOptions = args.seconds ? { seconds: args.seconds } : {};
+  if (args.file !== undefined) return runFile(args, io, { locale, timeZone, from, parseOptions });
   const result = validate(args.expression, { ...parseOptions, tz: timeZone });
   if (!result.valid || !result.expression) {
     if (args.json) {
@@ -234,4 +270,129 @@ export function run(argv: string[], io: CliIO): number {
   }
   io.stdout(`${lines.join('\n')}\n`);
   return failOnWarnings ? 1 : 0;
+}
+
+interface FileContext {
+  locale: Locale;
+  timeZone: string;
+  from: number | string;
+  parseOptions: { seconds?: 'optional' | 'required' | 'forbidden' };
+}
+
+interface JobReport {
+  line: number;
+  expression: string;
+  user?: string;
+  command: string;
+  timeZone: string;
+  valid: boolean;
+  description?: string;
+  next?: string[];
+  warnings: { code: string; severity: string; message: string }[];
+  errors: { code: string; message: string }[];
+}
+
+/** `--file`: explain, check and schedule every job line of a crontab. */
+function runFile(args: Args, io: CliIO, ctx: FileContext): number {
+  const path = args.file!;
+  let text: string;
+  try {
+    if (!io.readFile) throw new Error('reading files is not supported here');
+    text = io.readFile(path);
+  } catch (err) {
+    io.stderr(`cron-explain: cannot read ${clean(path)}: ${clean((err as Error).message)}\n`);
+    return 2;
+  }
+  const crontab = parseCrontab(text, { system: args.system });
+  const problems = crontab.problems.map((p) => ({ ...p }));
+  const jobs: JobReport[] = [];
+  for (const job of crontab.jobs) {
+    const zone = job.timeZone ?? ctx.timeZone;
+    const report: JobReport = {
+      line: job.line,
+      expression: job.expression,
+      ...(job.user !== undefined ? { user: job.user } : {}),
+      command: job.command,
+      timeZone: zone,
+      valid: false,
+      warnings: [],
+      errors: [],
+    };
+    jobs.push(report);
+    try {
+      assertTimeZone(zone);
+    } catch (err) {
+      report.errors.push({ code: 'INVALID_TIME_ZONE', message: (err as Error).message });
+      continue;
+    }
+    const result = validate(job.expression, { ...ctx.parseOptions, tz: zone });
+    if (!result.valid || !result.expression) {
+      report.errors = result.errors.map((e) => ({ code: e.code, message: e.message }));
+      continue;
+    }
+    report.valid = true;
+    report.description = explain(result.expression, { locale: ctx.locale });
+    report.warnings = result.warnings.map((w) => ({
+      code: w.code,
+      severity: w.severity,
+      message: w.message,
+    }));
+    if (!result.expression.reboot && args.next > 0) {
+      try {
+        report.next = nextRuns(result.expression, { tz: zone, from: ctx.from, count: args.next }).map((d) =>
+          formatInTimeZone(d, zone),
+        );
+      } catch (err) {
+        if (!(err instanceof CronError)) throw err;
+        report.next = [];
+      }
+    }
+  }
+
+  const invalid = jobs.filter((j) => !j.valid).length + problems.length;
+  const withWarnings = jobs.filter((j) => j.warnings.length > 0).length;
+  const code = invalid > 0 || (args.strict && withWarnings > 0) ? 1 : 0;
+
+  if (args.json) {
+    const out = { file: path, timeZone: ctx.timeZone, jobs, problems };
+    io.stdout(`${JSON.stringify(out, null, 2)}\n`);
+    return code;
+  }
+
+  const lines: string[] = [];
+  const entries = [
+    ...jobs.map((j) => ({ line: j.line, job: j })),
+    ...problems.map((p) => ({ line: p.line, problem: p })),
+  ].sort((a, b) => a.line - b.line);
+  for (const entry of entries) {
+    if (lines.length > 0) lines.push('');
+    if ('problem' in entry && entry.problem) {
+      lines.push(`line ${entry.line}: ${clean(entry.problem.message)}`);
+      continue;
+    }
+    const job = (entry as { job: JobReport }).job;
+    const user = job.user !== undefined ? `  (${clean(job.user)})` : '';
+    lines.push(`line ${job.line}: ${clean(job.expression)}  ${clean(job.command)}${user}`);
+    if (!job.valid) {
+      for (const e of job.errors) lines.push(`  ✖ ${clean(e.message)} [${e.code}]`);
+      continue;
+    }
+    lines.push(`  ${job.description}`);
+    if (job.timeZone !== ctx.timeZone) lines.push(`  ${ctx.locale.labels.timeZone}: ${job.timeZone}`);
+    if (job.next !== undefined) {
+      const runs = job.next.map((iso) => formatRun(new Date(iso), job.timeZone, ctx.locale));
+      if (runs.length === 0) lines.push(`  ${ctx.locale.labels.noRuns}`);
+      for (const r of runs) lines.push(`  → ${r}`);
+    }
+    for (const w of job.warnings)
+      lines.push(`  ${w.severity === 'warning' ? '!' : 'i'} ${w.message} [${w.code}]`);
+  }
+  if (entries.length === 0) lines.push('no jobs found');
+  lines.push(
+    '',
+    `${jobs.length} job(s): ${jobs.length - jobs.filter((j) => !j.valid).length} valid, ` +
+      `${invalid} invalid, ${withWarnings} with warnings (time zone: ${ctx.timeZone})`,
+  );
+  io.stdout(`${lines.join('\n')}\n`);
+  return code;
 }

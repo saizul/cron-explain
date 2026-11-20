@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `cron-explain --file <crontab>` explains, checks and schedules every job in a
+  crontab file (`-` reads standard input): description, next run (`--next N`,
+  default 1 per job), warnings and per-line errors, with a summary and exit
+  code `1` when a line is invalid. `CRON_TZ=` lines set the time zone of the
+  jobs below them, `--system` reads `/etc/crontab` style files with a user
+  column, and `--json` prints one entry per job.
+- `parseCrontab(text, { system? })` in the library API: job lines with line
+  numbers, user, command and `CRON_TZ`, environment variables and problems.
+- `examples/crontab`.
+
 ## [0.1.0] - 2026-11-18
 
 ### Added

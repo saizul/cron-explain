@@ -115,6 +115,7 @@ Warnings:
 
 ```text
 Usage: cron-explain <expression> [options]
+       cron-explain --file <crontab> [options]
 
 Options:
   -n, --next <N>       show the next N run times (default 5; 0 to hide)
@@ -123,6 +124,9 @@ Options:
   -l, --locale <code>  language of the description: en, bn (default en)
   -f, --from <date>    count runs from this ISO date instead of now
       --seconds <mode> optional (default), required or forbidden
+      --file <path>    explain every job in a crontab file ("-" for stdin);
+                       shows 1 next run per job unless --next is given
+      --system         the file has a user column (/etc/crontab, /etc/cron.d)
       --json           print JSON instead of text
       --strict         exit with code 1 when there are warnings
   -h, --help           show this help
@@ -136,7 +140,7 @@ joined, so `cron-explain 0 9 '*' '*' 1-5` also works. Options accept
 | Exit code | Meaning |
 | --- | --- |
 | 0 | The expression is valid (warnings are printed but do not fail) |
-| 1 | The expression is invalid, or there are warnings and `--strict` is set |
+| 1 | The expression (or a crontab line) is invalid, or there are warnings and `--strict` is set |
 | 2 | Usage error: unknown option, bad time zone, locale or date |
 
 `--json` prints a machine-readable result, handy in scripts and CI:
@@ -170,6 +174,35 @@ Use it as a check in CI to validate the schedules in your repository:
 ```yaml
 - run: npx @saizul/cron-explain "$(yq '.on.schedule[0].cron' .github/workflows/nightly.yml)" --strict --tz UTC
 ```
+
+### Crontab files
+
+`--file` reads a whole crontab and annotates every job: its description, the
+next run and any warnings. Comments, blank lines and `NAME=value` lines are
+skipped; `CRON_TZ=Zone` sets the time zone for the jobs below it, as cronie
+does. Use `-` to read standard input and `--system` for `/etc/crontab` and
+`/etc/cron.d/*`, which have a user column. Invalid lines are reported with
+their line number and the exit code is `1`, so a CI step or a pre-deploy hook
+can check a crontab before it is installed.
+
+```console
+$ crontab -l | cron-explain --file - --tz UTC
+line 7: */15 9-17 * * 1-5  /usr/local/bin/sync --quiet
+  Every 15 minutes, between 09:00 and 17:59, Monday through Friday
+  Time zone: Asia/Dhaka
+  → 2026-11-23 09:00:00 +06:00  Monday
+
+line 11: 30 2 * * *  /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+  At 02:30, every day
+  → 2026-11-21 02:30:00 +00:00  Saturday
+
+4 job(s): 4 valid, 0 invalid, 0 with warnings (time zone: UTC)
+```
+
+With `--json` the result is `{ file, timeZone, jobs: [...], problems: [...] }`,
+one entry per job with `line`, `expression`, `command`, `timeZone`, `valid`,
+`description`, `next`, `warnings` and `errors`. The parser is also exported as
+`parseCrontab(text, { system? })`. See [`examples/crontab`](examples/crontab).
 
 ## Supported syntax
 
@@ -345,6 +378,13 @@ True when the expression matches `date` to the second in the zone. A
 A canonical form: macros expanded, names replaced with numbers, `?` written
 as `*`: `normalize('0 9 ? * MON-FRI')` is `'0 9 * * 1-5'`.
 
+### `parseCrontab(text, { system? }) => Crontab`
+
+Reads a crontab file without throwing: `jobs` (`line`, `expression`,
+`command`, optional `user` and `timeZone` from `CRON_TZ`), `variables` and
+`problems` (lines that are not a job or an assignment). Pass each job's
+`expression` to `validate()` or `explain()`.
+
 ### `formatInTimeZone(date, tz?) => string`
 
 ISO 8601 in a zone with its offset: `'2026-03-08T03:30:00-04:00'`.
@@ -453,7 +493,6 @@ to make a first contribution. Comment on the issue to claim one.
   Kubernetes CronJob, systemd timer comparison).
 - `L-n` offsets (`L-3` = three days before the end of the month).
 - Optional year field (Quartz style).
-- `--explain-file crontab` to annotate every line of a crontab file.
 - Wrap-around ranges such as `FRI-MON` and `22-2`, behind an option.
 
 ## Contributing

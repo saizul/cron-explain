@@ -1,3 +1,11 @@
+export {
+  type Crontab,
+  type CrontabJob,
+  type CrontabOptions,
+  type CrontabProblem,
+  type CrontabVariable,
+  parseCrontab,
+} from './crontab.js';
 export { CronError } from './errors.js';
 export { type ExplainOptions, explain } from './explain/index.js';
 export { type ClockTime, type TimeShape, timeShape } from './explain/shape.js';
